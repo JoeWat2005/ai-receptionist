@@ -382,7 +382,9 @@ def reason_to_text(reason: str) -> str:
         "outside_business_hours": "Requested slot is outside clinic business hours.",
         "slot_occupied": "Requested slot is already occupied.",
         "incomplete_details": "Booking details are incomplete.",
+        "missing_required_details": "Required booking details are still missing.",
         "invalid_slot": "Date or time input is malformed.",
+        "invalid_contact": "Phone or email format is invalid.",
         "missing_slot": "Preferred date/time is still needed.",
         "no_slots_on_date": "No free slots remain on that date.",
     }
@@ -428,6 +430,28 @@ def decide_booking_outcome(
             "available_slots": [],
         }
 
+    if "phone" in validation_errors or "email" in validation_errors:
+        invalid_contact_fields = [field for field in ["phone", "email"] if field in validation_errors]
+        return {
+            "action": "need_more_info",
+            "status": None,
+            "reason": "invalid_contact",
+            "missing_fields": invalid_contact_fields,
+            "next_field": invalid_contact_fields[0],
+            "available_slots": [],
+        }
+
+    # Do not finalize booking outcomes until required fields are present.
+    if missing_required:
+        return {
+            "action": "need_more_info",
+            "status": None,
+            "reason": "missing_required_details",
+            "missing_fields": missing_required,
+            "next_field": next_field_to_ask(state, validation_errors),
+            "available_slots": [],
+        }
+
     date_iso = state["preferred_date"]
     time_hhmm = state["preferred_time"]
 
@@ -462,16 +486,6 @@ def decide_booking_outcome(
             "reason": reason,
             "missing_fields": missing_required,
             "next_field": missing_required[0] if missing_required else None,
-            "available_slots": available_slots,
-        }
-
-    if missing_required:
-        return {
-            "action": "create_outcome",
-            "status": "booking_request",
-            "reason": "incomplete_details",
-            "missing_fields": missing_required,
-            "next_field": missing_required[0],
             "available_slots": available_slots,
         }
 

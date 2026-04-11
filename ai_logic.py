@@ -147,6 +147,29 @@ def _extract_name(text: str) -> Optional[str]:
     return None
 
 
+def _extract_standalone_name(text: str) -> Optional[str]:
+    """Capture plain name replies like 'Helen Watmough'."""
+    candidate = text.strip()
+    if not candidate:
+        return None
+    if any(token in candidate for token in ["@", ":", "/", "\\", "http"]):
+        return None
+    if re.search(r"\d", candidate):
+        return None
+    if not re.fullmatch(r"[A-Za-z][A-Za-z' \-]{1,70}", candidate):
+        return None
+
+    parts = [part for part in candidate.split() if part]
+    if len(parts) < 2 or len(parts) > 4:
+        return None
+
+    blocked = {"consultation", "assessment", "available", "tomorrow", "today", "next"}
+    if any(part.lower() in blocked for part in parts):
+        return None
+
+    return " ".join(part.capitalize() for part in parts)
+
+
 def _extract_treatment(text: str, clinic: dict[str, Any]) -> Optional[str]:
     """Match text against clinic treatment aliases."""
     lower = text.lower()
@@ -187,6 +210,8 @@ def extract_fields_from_message(
 
     if "consultation" in lower:
         updates["booking_type"] = "consultation"
+    elif "consult" in lower:
+        updates["booking_type"] = "consultation"
     elif "assessment" in lower:
         updates["booking_type"] = "assessment"
     elif "follow up" in lower or "follow-up" in lower:
@@ -218,6 +243,10 @@ def extract_fields_from_message(
     name = _extract_name(text)
     if name:
         updates["name"] = name
+    elif not current_state.get("name"):
+        standalone_name = _extract_standalone_name(text)
+        if standalone_name:
+            updates["name"] = standalone_name
 
     email = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text)
     if email:
@@ -287,6 +316,7 @@ Structured booking state:
 
 Response rules:
 - If status confirmed: confirm the booked date/time clearly.
+- If status confirmed: also state that confirmation was sent to the user's phone/email.
 - If status booking_request: explain it is pending and a human will follow up.
 - If action need_more_info: ask only one next question.
 - If availability was asked, include up to 3 available times if present.
@@ -308,7 +338,8 @@ def fallback_assistant_reply(
         return (
             f"Thanks {state.get('name') or ''}. Your booking is confirmed for "
             f"{state.get('preferred_date')} at {state.get('preferred_time')}. "
-            "Our team will follow up shortly with final details."
+            f"A confirmation has been sent to {state.get('email') or 'your email'} "
+            f"and {state.get('phone') or 'your phone'}."
         ).strip()
 
     if decision.get("status") == "booking_request":

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from datetime import date, datetime, time, timedelta
+from pathlib import Path
 from typing import Any
 
 import streamlit as st
@@ -27,7 +28,18 @@ from booking_logic import (
 )
 from clinic_data import DAY_LABELS, DAY_ORDER, DEFAULT_CLINIC, business_hours_to_text
 
-load_dotenv()
+def load_env_settings() -> None:
+    """Load .env from project root and repair BOM-prefixed keys if present."""
+    env_path = Path(__file__).resolve().parent / ".env"
+    load_dotenv(dotenv_path=env_path, override=False)
+
+    # Some editors/shell commands write UTF-8 BOM; dotenv then sets a BOM-prefixed key.
+    bom_key = "\ufeffOPENAI_API_KEY"
+    if not os.getenv("OPENAI_API_KEY") and os.getenv(bom_key):
+        os.environ["OPENAI_API_KEY"] = os.getenv(bom_key, "")
+
+
+load_env_settings()
 
 WELCOME_TEMPLATE = "Hi, welcome to {clinic_name}. How can I help today?"
 
