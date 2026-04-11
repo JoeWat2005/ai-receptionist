@@ -363,10 +363,10 @@ def next_field_to_ask(state: dict[str, str], validation_errors: dict[str, str]) 
         "booking_type",
         "preferred_date",
         "preferred_time",
-        "timeframe",
         "name",
         "phone",
         "email",
+        "timeframe",
         "notes",
     ]
     for field in order:
@@ -448,7 +448,7 @@ def decide_booking_outcome(
             "status": None,
             "reason": "missing_required_details",
             "missing_fields": missing_required,
-            "next_field": next_field_to_ask(state, validation_errors),
+            "next_field": missing_required[0],
             "available_slots": [],
         }
 

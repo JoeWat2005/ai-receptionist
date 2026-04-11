@@ -140,6 +140,20 @@ def render_chat_history(messages: list[dict[str, Any]]) -> None:
             st.markdown(msg.get("content", ""))
 
 
+def build_confirmation_notice(state: dict[str, str]) -> str:
+    """Return deterministic confirmation-sent notice for confirmed bookings."""
+    email = state.get("email", "").strip()
+    phone = state.get("phone", "").strip()
+
+    if email and phone:
+        return f"A confirmation has been sent to {email} and {phone}."
+    if email:
+        return f"A confirmation has been sent to {email}."
+    if phone:
+        return f"A confirmation has been sent to {phone}."
+    return "A confirmation has been sent to your contact details."
+
+
 def process_user_message(conversation_id: int, clinic: dict[str, Any], user_text: str) -> None:
     """Process one conversation turn with deterministic booking logic + persisted state."""
     db.add_message(conversation_id, "user", user_text)
@@ -213,6 +227,7 @@ def process_user_message(conversation_id: int, clinic: dict[str, Any], user_text
     )
 
     lead_id = db.upsert_lead(conversation_id, clinic["id"], normalized_state)
+    existing_booking = db.get_booking_for_conversation(conversation_id)
 
     if decision["action"] == "create_outcome":
         db.upsert_booking(
@@ -230,6 +245,9 @@ def process_user_message(conversation_id: int, clinic: dict[str, Any], user_text
                 "notes": normalized_state.get("notes", ""),
             },
         )
+    elif existing_booking and existing_booking.get("status") == "booking_request":
+        # Clear stale pending outcome while still gathering required information.
+        db.delete_booking_for_conversation(conversation_id)
 
     availability_context = {
         "date": date_iso,
@@ -249,6 +267,13 @@ def process_user_message(conversation_id: int, clinic: dict[str, Any], user_text
         validation_errors=validation_errors,
         availability_context=availability_context,
     )
+
+    # Ensure confirmed bookings always include a clear confirmation-delivered notice.
+    if decision.get("status") == "confirmed":
+        notice = build_confirmation_notice(normalized_state)
+        if notice.lower() not in assistant_text.lower():
+            assistant_text = f"{assistant_text} {notice}".strip()
+
     db.add_message(conversation_id, "assistant", assistant_text)
 
 

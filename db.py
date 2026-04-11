@@ -354,6 +354,12 @@ def get_booking_for_conversation(conversation_id: int) -> Optional[dict[str, Any
     return dict(row) if row else None
 
 
+def delete_booking_for_conversation(conversation_id: int) -> None:
+    """Delete booking outcome for a conversation (used to clear stale pending rows)."""
+    with get_connection() as conn:
+        conn.execute("DELETE FROM bookings WHERE conversation_id = ?", (conversation_id,))
+
+
 def upsert_booking(
     conversation_id: int,
     clinic_id: int,
