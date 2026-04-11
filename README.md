@@ -42,6 +42,7 @@ STREAMLIT_COOKIE_SECRET=replace_with_random_hex_string
 Notes:
 - App auto-generates `.streamlit/secrets.toml` from `.env` at startup.
 - You do not need to maintain Clerk values in separate files.
+- Set either `CLERK_SERVER_METADATA_URL` or `CLERK_FRONTEND_API_URL`. If using `CLERK_FRONTEND_API_URL`, leave `CLERK_SERVER_METADATA_URL` blank.
 
 ## Run
 1. `pip install -r requirements.txt`

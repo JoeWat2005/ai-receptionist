@@ -41,6 +41,21 @@ def _toml_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _is_placeholder_value(value: str) -> bool:
+    """Heuristic check for template/example placeholder values."""
+    lowered = value.strip().lower()
+    if not lowered:
+        return True
+    placeholders = [
+        "your-clerk-domain",
+        "replace_with_",
+        "xxxxxxxx",
+        "pk_test_xxxxxxxxx",
+        "sk_test_xxxxxxxxx",
+    ]
+    return any(token in lowered for token in placeholders)
+
+
 def _build_streamlit_secrets_from_env() -> str:
     """
     Build Streamlit OIDC secrets TOML from environment variables.
@@ -63,6 +78,8 @@ def _build_streamlit_secrets_from_env() -> str:
     )
     server_metadata_url = os.getenv("CLERK_SERVER_METADATA_URL", "").strip()
     frontend_api_url = os.getenv("CLERK_FRONTEND_API_URL", "").strip().rstrip("/")
+    if _is_placeholder_value(server_metadata_url):
+        server_metadata_url = ""
     if not server_metadata_url and frontend_api_url:
         server_metadata_url = f"{frontend_api_url}/.well-known/openid-configuration"
 
@@ -70,6 +87,10 @@ def _build_streamlit_secrets_from_env() -> str:
     cookie_secret = os.getenv("STREAMLIT_COOKIE_SECRET", "").strip()
 
     required_values = [client_id, client_secret, server_metadata_url, cookie_secret]
+    if _is_placeholder_value(client_id) or _is_placeholder_value(client_secret):
+        return ""
+    if _is_placeholder_value(frontend_api_url) and not server_metadata_url:
+        return ""
     if not all(required_values):
         return ""
 
@@ -301,7 +322,10 @@ def render_auth_sidebar() -> tuple[dict[str, Any], bool, bool]:
         if not user:
             st.sidebar.warning("Sign-in state could not be loaded. Please sign in again.")
             if st.sidebar.button("Sign in with Clerk", type="primary", use_container_width=True):
-                st.login("clerk")
+                try:
+                    st.login("clerk")
+                except Exception as exc:
+                    st.sidebar.error(f"Clerk login failed: {exc}")
             st.session_state.auth_user = guest_user
             st.session_state.guest_mode = True
             return guest_user, False, True
@@ -325,7 +349,11 @@ def render_auth_sidebar() -> tuple[dict[str, Any], bool, bool]:
     st.sidebar.info("No account needed. Continue as guest, or sign in for member bonus.")
     if st.sidebar.button("Sign in with Clerk", type="primary", use_container_width=True):
         st.session_state.guest_mode = False
-        st.login("clerk")
+        try:
+            st.login("clerk")
+        except Exception as exc:
+            st.session_state.guest_mode = True
+            st.sidebar.error(f"Clerk login failed: {exc}")
     st.sidebar.caption("Member bonus: profile autofill + priority follow-up on pending requests.")
     return guest_user, False, True
 
