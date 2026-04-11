@@ -37,12 +37,15 @@ CLERK_FRONTEND_API_URL=https://your-clerk-domain
 
 STREAMLIT_REDIRECT_URI=http://localhost:8501/oauth2callback
 STREAMLIT_COOKIE_SECRET=replace_with_random_hex_string
+CLERK_OIDC_PROMPT=login
+CLERK_OIDC_SCOPE=openid profile email
 ```
 
 Notes:
 - App auto-generates `.streamlit/secrets.toml` from `.env` at startup.
 - You do not need to maintain Clerk values in separate files.
 - Set either `CLERK_SERVER_METADATA_URL` or `CLERK_FRONTEND_API_URL`. If using `CLERK_FRONTEND_API_URL`, leave `CLERK_SERVER_METADATA_URL` blank.
+- `CLERK_OIDC_PROMPT=login` avoids Clerk rejecting Streamlit's default select-account prompt.
 
 ## Run
 1. `pip install -r requirements.txt`
@@ -51,7 +54,16 @@ Notes:
 4. Use sidebar:
    - Continue as guest, or
    - Sign in with Clerk for member bonus/admin access
+5. If Clerk returns redirect URI mismatch:
+   - In Clerk OAuth app, click **Save** (your screenshot shows unsaved changes).
+   - Ensure Redirect URIs includes exactly `http://localhost:8501/oauth2callback`.
 
 ## Security
 - Keep `.env` private and never commit it.
 - Rotate keys immediately if they are ever shared.
+
+## Admin Access
+- Add your email to `CLERK_ADMIN_EMAILS` in `.env`.
+- Example:
+  - `CLERK_ADMIN_EMAILS=watmoughjoe2005@gmail.com`
+- Multiple admins can be comma-separated.

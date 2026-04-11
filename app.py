@@ -10,6 +10,7 @@ from typing import Any
 import streamlit as st
 from dotenv import load_dotenv
 
+import ui_components as ui
 from auth import (
     auth_provider,
     clerk_oidc_is_configured,
@@ -67,6 +68,8 @@ def _build_streamlit_secrets_from_env() -> str:
       - STREAMLIT_COOKIE_SECRET
     Optional:
       - STREAMLIT_REDIRECT_URI (default localhost callback)
+      - CLERK_OIDC_PROMPT (default login)
+      - CLERK_OIDC_SCOPE (default openid profile email)
     """
     client_id = (
         os.getenv("CLERK_CLIENT_ID", "").strip()
@@ -85,6 +88,24 @@ def _build_streamlit_secrets_from_env() -> str:
 
     redirect_uri = os.getenv("STREAMLIT_REDIRECT_URI", "http://localhost:8501/oauth2callback").strip()
     cookie_secret = os.getenv("STREAMLIT_COOKIE_SECRET", "").strip()
+    prompt = os.getenv("CLERK_OIDC_PROMPT", "login").strip()
+    scope = os.getenv("CLERK_OIDC_SCOPE", "openid email profile").strip()
+
+    # Normalize accidental list-like env values, e.g. "[select_account]".
+    if prompt.startswith("[") and prompt.endswith("]"):
+        prompt = prompt.strip("[] ").strip("'").strip('"')
+    if "," in prompt:
+        prompt = prompt.split(",", 1)[0].strip()
+    if not prompt:
+        prompt = "login"
+    if prompt not in {"none", "login", "consent", "select_account"}:
+        prompt = "login"
+    # Clerk rejects `select_account` for this flow, so force `login`.
+    if prompt == "select_account":
+        prompt = "login"
+
+    if not scope:
+        scope = "openid email profile"
 
     required_values = [client_id, client_secret, server_metadata_url, cookie_secret]
     if _is_placeholder_value(client_id) or _is_placeholder_value(client_secret):
@@ -103,6 +124,7 @@ def _build_streamlit_secrets_from_env() -> str:
         f'client_id = "{_toml_escape(client_id)}"',
         f'client_secret = "{_toml_escape(client_secret)}"',
         f'server_metadata_url = "{_toml_escape(server_metadata_url)}"',
+        f'client_kwargs = {{ prompt = "{_toml_escape(prompt)}", scope = "{_toml_escape(scope)}" }}',
         "",
     ]
     return "\n".join(lines)
@@ -128,10 +150,23 @@ def ensure_streamlit_secrets_from_env() -> None:
         return
 
 
+def configured_redirect_uri() -> str:
+    """Return effective redirect URI used by Streamlit auth."""
+    try:
+        auth_cfg = st.secrets.get("auth", {})
+        redirect = str(auth_cfg.get("redirect_uri", "")).strip()
+        if redirect:
+            return redirect
+    except Exception:
+        pass
+    return os.getenv("STREAMLIT_REDIRECT_URI", "http://localhost:8501/oauth2callback").strip()
+
+
 def load_env_settings() -> None:
     """Load .env from project root and repair BOM-prefixed keys if present."""
     env_path = Path(__file__).resolve().parent / ".env"
-    load_dotenv(dotenv_path=env_path, override=False)
+    # Ensure project-local `.env` values win over stale machine/user env vars.
+    load_dotenv(dotenv_path=env_path, override=True)
 
     # Some editors/shell commands write UTF-8 BOM; dotenv then sets a BOM-prefixed key.
     bom_key = "\ufeffOPENAI_API_KEY"
@@ -148,124 +183,13 @@ WELCOME_TEMPLATE = "Hi, welcome to {clinic_name}. How can I help today?"
 
 
 def apply_app_styles() -> None:
-    """Apply a cleaner visual theme for demo-ready presentation."""
-    st.markdown(
-        """
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500;700&display=swap');
-
-:root {
-  --bg: #f5f7fb;
-  --panel: #ffffff;
-  --ink: #1e2547;
-  --muted: #5c6384;
-  --brand: #2563eb;
-  --accent: #0ea5a4;
-  --line: #e4e8f3;
-}
-
-.stApp {
-  background:
-    radial-gradient(1100px 500px at -10% -20%, #dbeafe 0%, transparent 60%),
-    radial-gradient(900px 450px at 110% -25%, #ccfbf1 0%, transparent 55%),
-    var(--bg);
-}
-
-h1, h2, h3, h4 {
-  font-family: 'Space Grotesk', sans-serif !important;
-  color: var(--ink);
-}
-
-div, p, span, label, input, textarea, button {
-  font-family: 'DM Sans', sans-serif !important;
-}
-
-[data-testid="stSidebar"] {
-  background: linear-gradient(180deg, #f9fbff 0%, #f3f6ff 100%);
-  border-right: 1px solid var(--line);
-}
-
-[data-testid="stMetric"] {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 8px 12px;
-}
-
-[data-testid="stDataFrame"], .stTabs [data-baseweb="tab-panel"] {
-  background: var(--panel);
-  border-radius: 14px;
-}
-
-div.stButton > button {
-  border-radius: 12px;
-  border: 1px solid #d7ddf0;
-}
-
-.hero {
-  background: linear-gradient(120deg, #1e40af 0%, #0f766e 100%);
-  border-radius: 18px;
-  padding: 22px 24px;
-  color: #f8fbff;
-  margin-bottom: 10px;
-  box-shadow: 0 10px 24px rgba(31, 41, 55, 0.18);
-}
-
-.hero h1 {
-  color: #f8fbff !important;
-  margin: 0 0 4px 0;
-}
-
-.hero-sub {
-  color: #e6eefc;
-  margin: 0;
-}
-
-.pill-row {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 12px;
-}
-
-.pill {
-  display: inline-block;
-  padding: 5px 10px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.16);
-  color: #f8fbff;
-  font-size: 0.82rem;
-}
-</style>
-        """,
-        unsafe_allow_html=True,
-    )
+    """Backward-compatible wrapper around modular UI styles."""
+    ui.apply_app_styles()
 
 
-def render_header(clinic: dict[str, Any], auth_user: dict[str, Any], admin_mode: bool) -> None:
-    """Render branded app header with quick clinic and user context."""
-    user_name = auth_user.get("full_name") or auth_user.get("email") or "Guest"
-    if admin_mode:
-        role_label = "Admin"
-    elif str(auth_user.get("role", "")).strip().lower() == "guest":
-        role_label = "Guest"
-    else:
-        role_label = "User"
-    st.markdown(
-        f"""
-<div class="hero">
-  <h1>{clinic["name"]} - AI Receptionist</h1>
-  <p class="hero-sub">Conversational booking assistant with live availability and persistent records.</p>
-  <div class="pill-row">
-    <span class="pill">{clinic["location"]}</span>
-    <span class="pill">{clinic.get("opening_hours_text", "")}</span>
-    <span class="pill">Slot length: {clinic.get("slot_length_minutes", 30)} mins</span>
-    <span class="pill">Signed in: {user_name} ({role_label})</span>
-  </div>
-</div>
-        """,
-        unsafe_allow_html=True,
-    )
+def render_header(clinic: dict[str, Any], auth_user: dict[str, Any], admin_mode: bool, guest_mode: bool) -> None:
+    """Backward-compatible wrapper around modular hero header."""
+    ui.render_header(clinic=clinic, auth_user=auth_user, admin_mode=admin_mode, guest_mode=guest_mode)
 
 
 def init_auth_state() -> None:
@@ -299,6 +223,13 @@ def render_auth_sidebar() -> tuple[dict[str, Any], bool, bool]:
         }
         st.session_state.auth_user = local_user
         st.session_state.guest_mode = False
+        ui.render_sidebar_account_summary(
+            auth_user=local_user,
+            admin_mode=True,
+            guest_mode=False,
+            member_bonus_active=True,
+            redirect_uri=configured_redirect_uri(),
+        )
         return local_user, True, False
 
     oidc_ok, oidc_message = clerk_oidc_is_configured()
@@ -315,6 +246,13 @@ def render_auth_sidebar() -> tuple[dict[str, Any], bool, bool]:
         st.sidebar.info("Guest booking is still available while Clerk setup is being completed.")
         st.session_state.auth_user = guest_user
         st.session_state.guest_mode = True
+        ui.render_sidebar_account_summary(
+            auth_user=guest_user,
+            admin_mode=False,
+            guest_mode=True,
+            member_bonus_active=False,
+            redirect_uri=configured_redirect_uri(),
+        )
         return guest_user, False, True
 
     if streamlit_user_is_logged_in():
@@ -325,7 +263,13 @@ def render_auth_sidebar() -> tuple[dict[str, Any], bool, bool]:
                 try:
                     st.login("clerk")
                 except Exception as exc:
-                    st.sidebar.error(f"Clerk login failed: {exc}")
+                    err_text = str(exc)
+                    st.sidebar.error(f"Clerk login failed: {err_text}")
+                    if "redirect_uri" in err_text.lower():
+                        st.sidebar.warning(
+                            "Redirect URI mismatch. In Clerk OAuth app, click Save and ensure this exact URI is listed:"
+                        )
+                        st.sidebar.code(configured_redirect_uri(), language="text")
             st.session_state.auth_user = guest_user
             st.session_state.guest_mode = True
             return guest_user, False, True
@@ -334,26 +278,43 @@ def render_auth_sidebar() -> tuple[dict[str, Any], bool, bool]:
         st.session_state.auth_user = auth_user
         st.session_state.guest_mode = False
 
-        st.sidebar.success("Authenticated")
-        st.sidebar.write(f"**User:** {auth_user.get('full_name') or auth_user.get('email')}")
-        st.sidebar.write(f"**Email:** {auth_user.get('email') or 'Unknown'}")
-        st.sidebar.write("**Access:** " + ("Admin" if is_admin_user(auth_user) else "User"))
+        current_admin = is_admin_user(auth_user)
+        ui.render_sidebar_account_summary(
+            auth_user=auth_user,
+            admin_mode=current_admin,
+            guest_mode=False,
+            member_bonus_active=True,
+            redirect_uri=configured_redirect_uri(),
+        )
         st.sidebar.caption("Member bonus unlocked: faster booking with prefilled profile details.")
 
         if st.sidebar.button("Sign out", use_container_width=True):
             st.logout()
-        return auth_user, is_admin_user(auth_user), False
+        return auth_user, current_admin, False
 
     st.session_state.auth_user = guest_user
     st.session_state.guest_mode = True
     st.sidebar.info("No account needed. Continue as guest, or sign in for member bonus.")
+    ui.render_sidebar_account_summary(
+        auth_user=guest_user,
+        admin_mode=False,
+        guest_mode=True,
+        member_bonus_active=False,
+        redirect_uri=configured_redirect_uri(),
+    )
     if st.sidebar.button("Sign in with Clerk", type="primary", use_container_width=True):
         st.session_state.guest_mode = False
         try:
             st.login("clerk")
         except Exception as exc:
             st.session_state.guest_mode = True
-            st.sidebar.error(f"Clerk login failed: {exc}")
+            err_text = str(exc)
+            st.sidebar.error(f"Clerk login failed: {err_text}")
+            if "redirect_uri" in err_text.lower():
+                st.sidebar.warning(
+                    "Redirect URI mismatch. In Clerk OAuth app, click Save and ensure this exact URI is listed:"
+                )
+                st.sidebar.code(configured_redirect_uri(), language="text")
     st.sidebar.caption("Member bonus: profile autofill + priority follow-up on pending requests.")
     return guest_user, False, True
 
@@ -661,11 +622,7 @@ def render_chat_tab(
 ) -> None:
     """Render receptionist chat flow and live structured outcome state."""
     st.subheader("Reception Chat")
-
-    if guest_mode:
-        st.info("Guest booking is enabled. Sign in to unlock member bonus: autofill + priority follow-up.")
-    elif member_bonus_active:
-        st.success("Member bonus active: your profile details can be used to speed up booking.")
+    ui.render_auth_hint(member_bonus_active=member_bonus_active, guest_mode=guest_mode)
 
     left, right = st.columns([1, 1])
     with left:
@@ -923,7 +880,7 @@ def render_conversations_tab(active_conversation_id: int) -> None:
 
 def main() -> None:
     st.set_page_config(page_title="AI Receptionist Booking MVP", page_icon=":calendar:", layout="wide")
-    apply_app_styles()
+    ui.apply_app_styles()
 
     clinic = bootstrap_clinic()
     auth_user, admin_mode, guest_mode = render_auth_sidebar()
@@ -935,7 +892,15 @@ def main() -> None:
 
     member_bonus_active = auth_provider() == "clerk" and not guest_mode and bool(auth_user)
 
-    render_header(clinic, auth_user, admin_mode)
+    ui.render_header(clinic=clinic, auth_user=auth_user, admin_mode=admin_mode, guest_mode=guest_mode)
+    _, top_right = st.columns([3, 2])
+    with top_right:
+        ui.render_profile_card(
+            auth_user=auth_user,
+            admin_mode=admin_mode,
+            guest_mode=guest_mode,
+            member_bonus_active=member_bonus_active,
+        )
     render_today_overview(clinic)
     conversation_id = ensure_session_conversation(clinic)
 
