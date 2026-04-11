@@ -1,86 +1,56 @@
 # AI Receptionist Booking MVP (Streamlit + SQLite)
 
-A local, modular prototype for an aesthetics clinic where an AI receptionist handles FAQ, lead qualification, slot availability checks, and booking outcomes in chat.
+Local, modular aesthetics clinic prototype with deterministic booking logic and Clerk access control.
 
-## Stack
-- Python
-- Streamlit
-- OpenAI API
-- sqlite3 (local database)
-- python-dotenv
-- PyJWT (for Clerk token verification)
+## What changed
+- Clerk auth now uses a **single `.env`** setup.
+- Users can book as **guest** (no account required).
+- Signed-in users get a **member bonus**:
+  - profile autofill (name/email) during booking
+  - priority follow-up marker on pending booking requests
+- Admin access is email-whitelisted:
+  - `watmoughjoe2005@gmail.com`
 
-## Project Files
-- `app.py`
-  - UI orchestration, auth gating, tabs, and booking turn flow.
-- `auth.py`
-  - Clerk token verification and user/admin authorization helpers.
-- `clinic_data.py`
-  - Default clinic data and opening-hours text helpers.
-- `db.py`
-  - SQLite schema + persistence + lightweight migrations.
-- `booking_logic.py`
-  - Deterministic validation, slot generation, overlap checks, booking outcomes.
-- `ai_logic.py`
-  - Extraction helpers + prompt construction + model/fallback response generation.
-- `requirements.txt`
-- `.env.example`
+## Access behavior
+- Guest: `Chat` only
+- Signed-in non-admin user: `Chat` only + member bonus
+- Admin: `Chat`, `Calendar`, `Dashboard`, `Leads`, `Bookings`, `Conversations`
 
-## Highlights
-- Persistent conversations, messages, leads, and bookings.
-- Deterministic booking decisions in Python (AI does language only).
-- Dashboard controls for opening hours and slot length.
-- Calendar tab with free-slot view and `.ics` export.
-- User/admin access model with optional Clerk authentication.
-- Polished MVP styling for demos.
+## Required `.env` config
+Copy `.env.example` to `.env` and fill values:
 
-## Auth Modes
-### 1) Local demo mode (default)
-Set `AUTH_PROVIDER=none`.
-- App opens directly.
-- Full admin tabs are available for local demos.
+```env
+OPENAI_API_KEY=your_openai_key
+OPENAI_MODEL=gpt-4.1-mini
 
-### 2) Clerk mode
-Set `AUTH_PROVIDER=clerk` and provide verification config:
-- `CLERK_JWKS_URL` **or** `CLERK_JWT_PUBLIC_KEY`
-- Optional: `CLERK_ISSUER`, `CLERK_AUDIENCE`
-- Admin checks:
-  - `CLERK_ADMIN_ROLE_VALUE=admin` (default)
-  - optional `CLERK_ADMIN_EMAILS=owner@clinic.com,manager@clinic.com`
+AUTH_PROVIDER=clerk
+CLERK_ADMIN_ROLE_VALUE=admin
+CLERK_ADMIN_EMAILS=watmoughjoe2005@gmail.com
 
-In Clerk mode:
-- Users sign in via sidebar token input (or `?__session=...` query param).
-- Non-admin users get `Chat` + `Calendar`.
-- Admin users get all tabs (`Dashboard`, `Leads`, `Bookings`, `Conversations`).
+CLERK_CLIENT_ID=pk_test_...
+CLERK_CLIENT_SECRET=sk_test_...
 
-## Database Schema
-SQLite file: `clinic_receptionist.db`
+# Either set this:
+CLERK_SERVER_METADATA_URL=https://your-clerk-domain/.well-known/openid-configuration
+# Or this:
+CLERK_FRONTEND_API_URL=https://your-clerk-domain
 
-Tables:
-1. `clinics`
-2. `conversations`
-3. `messages`
-4. `leads`
-5. `bookings`
+STREAMLIT_REDIRECT_URI=http://localhost:8501/oauth2callback
+STREAMLIT_COOKIE_SECRET=replace_with_random_hex_string
+```
 
-## Deterministic Booking Rules
-Implemented in `booking_logic.py`:
-- Normalize and validate phone/email/date/time.
-- Require key fields before finalizing booking.
-- Confirm only when slot is valid/free and required details are complete.
-- Create `booking_request` when slot is outside hours or occupied.
-- Use configured opening hours + slot length for availability generation.
+Notes:
+- App auto-generates `.streamlit/secrets.toml` from `.env` at startup.
+- You do not need to maintain Clerk values in separate files.
 
-## Run Locally
-1. Create/activate virtual environment.
-2. Install dependencies:
-   - `pip install -r requirements.txt`
-3. Create `.env` from `.env.example` and set `OPENAI_API_KEY`.
-4. Run app:
-   - `streamlit run app.py`
-5. Open local URL (usually `http://localhost:8501`).
+## Run
+1. `pip install -r requirements.txt`
+2. `streamlit run app.py`
+3. Open `http://localhost:8501`
+4. Use sidebar:
+   - Continue as guest, or
+   - Sign in with Clerk for member bonus/admin access
 
-## Notes
-- No external DB, no external booking API, no auth server in this repo.
-- Clerk verification is configurable and optional for local demos.
-- Booking authority stays in Python + SQLite.
+## Security
+- Keep `.env` private and never commit it.
+- Rotate keys immediately if they are ever shared.

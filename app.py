@@ -12,9 +12,10 @@ from dotenv import load_dotenv
 
 from auth import (
     auth_provider,
-    get_session_token_from_query,
+    clerk_oidc_is_configured,
+    get_authenticated_user_from_streamlit,
     is_admin_user,
-    verify_clerk_token,
+    streamlit_user_is_logged_in,
 )
 import db
 from ai_logic import (
@@ -34,6 +35,78 @@ from booking_logic import (
 )
 from clinic_data import DAY_LABELS, DAY_ORDER, DEFAULT_CLINIC, business_hours_to_text
 
+
+def _toml_escape(value: str) -> str:
+    """Escape string for safe TOML double-quoted value."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _build_streamlit_secrets_from_env() -> str:
+    """
+    Build Streamlit OIDC secrets TOML from environment variables.
+
+    Required:
+      - CLERK_CLIENT_ID (or NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY)
+      - CLERK_CLIENT_SECRET (or CLERK_SECRET_KEY)
+      - CLERK_SERVER_METADATA_URL (or CLERK_FRONTEND_API_URL)
+      - STREAMLIT_COOKIE_SECRET
+    Optional:
+      - STREAMLIT_REDIRECT_URI (default localhost callback)
+    """
+    client_id = (
+        os.getenv("CLERK_CLIENT_ID", "").strip()
+        or os.getenv("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "").strip()
+    )
+    client_secret = (
+        os.getenv("CLERK_CLIENT_SECRET", "").strip()
+        or os.getenv("CLERK_SECRET_KEY", "").strip()
+    )
+    server_metadata_url = os.getenv("CLERK_SERVER_METADATA_URL", "").strip()
+    frontend_api_url = os.getenv("CLERK_FRONTEND_API_URL", "").strip().rstrip("/")
+    if not server_metadata_url and frontend_api_url:
+        server_metadata_url = f"{frontend_api_url}/.well-known/openid-configuration"
+
+    redirect_uri = os.getenv("STREAMLIT_REDIRECT_URI", "http://localhost:8501/oauth2callback").strip()
+    cookie_secret = os.getenv("STREAMLIT_COOKIE_SECRET", "").strip()
+
+    required_values = [client_id, client_secret, server_metadata_url, cookie_secret]
+    if not all(required_values):
+        return ""
+
+    lines = [
+        "[auth]",
+        f'redirect_uri = "{_toml_escape(redirect_uri)}"',
+        f'cookie_secret = "{_toml_escape(cookie_secret)}"',
+        "",
+        "[auth.clerk]",
+        f'client_id = "{_toml_escape(client_id)}"',
+        f'client_secret = "{_toml_escape(client_secret)}"',
+        f'server_metadata_url = "{_toml_escape(server_metadata_url)}"',
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def ensure_streamlit_secrets_from_env() -> None:
+    """Write `.streamlit/secrets.toml` from `.env` for Clerk OIDC login."""
+    if auth_provider() != "clerk":
+        return
+
+    toml_content = _build_streamlit_secrets_from_env()
+    if not toml_content:
+        return
+
+    secrets_path = Path(__file__).resolve().parent / ".streamlit" / "secrets.toml"
+    secrets_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing = secrets_path.read_text(encoding="utf-8") if secrets_path.exists() else ""
+        if existing != toml_content:
+            secrets_path.write_text(toml_content, encoding="utf-8")
+    except OSError:
+        # Auth helper will surface a readable setup error in the sidebar.
+        return
+
+
 def load_env_settings() -> None:
     """Load .env from project root and repair BOM-prefixed keys if present."""
     env_path = Path(__file__).resolve().parent / ".env"
@@ -43,6 +116,9 @@ def load_env_settings() -> None:
     bom_key = "\ufeffOPENAI_API_KEY"
     if not os.getenv("OPENAI_API_KEY") and os.getenv(bom_key):
         os.environ["OPENAI_API_KEY"] = os.getenv(bom_key, "")
+
+    # Keep Clerk setup in one .env file by generating Streamlit OIDC secrets automatically.
+    ensure_streamlit_secrets_from_env()
 
 
 load_env_settings()
@@ -148,7 +224,12 @@ div.stButton > button {
 def render_header(clinic: dict[str, Any], auth_user: dict[str, Any], admin_mode: bool) -> None:
     """Render branded app header with quick clinic and user context."""
     user_name = auth_user.get("full_name") or auth_user.get("email") or "Guest"
-    role_label = "Admin" if admin_mode else "User"
+    if admin_mode:
+        role_label = "Admin"
+    elif str(auth_user.get("role", "")).strip().lower() == "guest":
+        role_label = "Guest"
+    else:
+        role_label = "User"
     st.markdown(
         f"""
 <div class="hero">
@@ -170,18 +251,16 @@ def init_auth_state() -> None:
     """Initialize auth-related session state keys."""
     if "auth_user" not in st.session_state:
         st.session_state.auth_user = None
-    if "auth_error" not in st.session_state:
-        st.session_state.auth_error = ""
-    if "auth_token" not in st.session_state:
-        st.session_state.auth_token = ""
+    if "guest_mode" not in st.session_state:
+        st.session_state.guest_mode = False
 
 
-def render_auth_sidebar() -> tuple[dict[str, Any], bool]:
+def render_auth_sidebar() -> tuple[dict[str, Any], bool, bool]:
     """
     Render authentication controls.
 
     Returns:
-      (auth_user_dict, is_admin)
+      (auth_user_dict, is_admin, is_guest)
     """
     init_auth_state()
     provider = auth_provider()
@@ -198,47 +277,57 @@ def render_auth_sidebar() -> tuple[dict[str, Any], bool]:
             "claims": {},
         }
         st.session_state.auth_user = local_user
-        return local_user, True
+        st.session_state.guest_mode = False
+        return local_user, True, False
 
-    token_from_query = get_session_token_from_query(st.query_params)
-    if token_from_query and not st.session_state.auth_token:
-        st.session_state.auth_token = token_from_query
+    oidc_ok, oidc_message = clerk_oidc_is_configured()
+    guest_user = {
+        "user_id": "guest",
+        "email": "",
+        "full_name": "Guest",
+        "role": "guest",
+        "claims": {},
+    }
 
-    if st.session_state.auth_user:
-        auth_user = st.session_state.auth_user
+    if not oidc_ok:
+        st.sidebar.error(oidc_message)
+        st.sidebar.info("Guest booking is still available while Clerk setup is being completed.")
+        st.session_state.auth_user = guest_user
+        st.session_state.guest_mode = True
+        return guest_user, False, True
+
+    if streamlit_user_is_logged_in():
+        user = get_authenticated_user_from_streamlit()
+        if not user:
+            st.sidebar.warning("Sign-in state could not be loaded. Please sign in again.")
+            if st.sidebar.button("Sign in with Clerk", type="primary", use_container_width=True):
+                st.login("clerk")
+            st.session_state.auth_user = guest_user
+            st.session_state.guest_mode = True
+            return guest_user, False, True
+
+        auth_user = user.to_session_dict()
+        st.session_state.auth_user = auth_user
+        st.session_state.guest_mode = False
+
         st.sidebar.success("Authenticated")
         st.sidebar.write(f"**User:** {auth_user.get('full_name') or auth_user.get('email')}")
-        st.sidebar.write(f"**Role:** {auth_user.get('role', 'user')}")
+        st.sidebar.write(f"**Email:** {auth_user.get('email') or 'Unknown'}")
+        st.sidebar.write("**Access:** " + ("Admin" if is_admin_user(auth_user) else "User"))
+        st.sidebar.caption("Member bonus unlocked: faster booking with prefilled profile details.")
+
         if st.sidebar.button("Sign out", use_container_width=True):
-            st.session_state.auth_user = None
-            st.session_state.auth_error = ""
-            st.session_state.auth_token = ""
-            st.rerun()
-        return auth_user, is_admin_user(auth_user)
+            st.logout()
+        return auth_user, is_admin_user(auth_user), False
 
-    token_input = st.sidebar.text_input(
-        "Clerk session token",
-        value=st.session_state.auth_token,
-        type="password",
-        help="Paste Clerk session JWT here, or pass `?__session=...` in URL.",
-    )
-    st.session_state.auth_token = token_input.strip()
-
-    if st.sidebar.button("Sign in", type="primary", use_container_width=True):
-        try:
-            user = verify_clerk_token(st.session_state.auth_token)
-            st.session_state.auth_user = user.to_session_dict()
-            st.session_state.auth_error = ""
-            st.rerun()
-        except Exception as exc:
-            st.session_state.auth_error = str(exc)
-
-    if st.session_state.auth_error:
-        st.sidebar.error(st.session_state.auth_error)
-    else:
-        st.sidebar.info("Sign in to access this app.")
-
-    return {}, False
+    st.session_state.auth_user = guest_user
+    st.session_state.guest_mode = True
+    st.sidebar.info("No account needed. Continue as guest, or sign in for member bonus.")
+    if st.sidebar.button("Sign in with Clerk", type="primary", use_container_width=True):
+        st.session_state.guest_mode = False
+        st.login("clerk")
+    st.sidebar.caption("Member bonus: profile autofill + priority follow-up on pending requests.")
+    return guest_user, False, True
 
 
 def render_today_overview(clinic: dict[str, Any]) -> None:
@@ -367,7 +456,13 @@ def build_confirmation_notice(state: dict[str, str]) -> str:
     return "A confirmation has been sent to your contact details."
 
 
-def process_user_message(conversation_id: int, clinic: dict[str, Any], user_text: str) -> None:
+def process_user_message(
+    conversation_id: int,
+    clinic: dict[str, Any],
+    user_text: str,
+    auth_user: dict[str, Any],
+    member_bonus_active: bool,
+) -> None:
     """Process one conversation turn with deterministic booking logic + persisted state."""
     db.add_message(conversation_id, "user", user_text)
 
@@ -375,6 +470,28 @@ def process_user_message(conversation_id: int, clinic: dict[str, Any], user_text
     extracted = extract_fields_from_message(user_text, existing_state, clinic)
     merged_state = merge_booking_state(existing_state, extracted)
     normalized_state, validation_errors = normalize_and_validate_state(merged_state)
+
+    # Member bonus: prefill known profile details to reduce friction.
+    if member_bonus_active:
+        profile_name = str(auth_user.get("full_name", "")).strip()
+        profile_email = str(auth_user.get("email", "")).strip()
+
+        if profile_name and profile_name.lower() not in {"guest", "signed in user"}:
+            if not normalized_state.get("name"):
+                normalized_state["name"] = profile_name
+
+        if profile_email and not normalized_state.get("email"):
+            normalized_state["email"] = profile_email
+
+        notes = normalized_state.get("notes", "")
+        if "member bonus" not in notes.lower():
+            normalized_state["notes"] = (
+                f"{notes} | Member bonus: priority follow-up.".strip(" |")
+                if notes
+                else "Member bonus: priority follow-up."
+            )
+
+        normalized_state, validation_errors = normalize_and_validate_state(normalized_state)
 
     flexible_time = detect_flexible_time_request(user_text)
     availability_query = detect_availability_query(user_text)
@@ -442,6 +559,15 @@ def process_user_message(conversation_id: int, clinic: dict[str, Any], user_text
     lead_id = db.upsert_lead(conversation_id, clinic["id"], normalized_state)
     existing_booking = db.get_booking_for_conversation(conversation_id)
 
+    booking_notes = normalized_state.get("notes", "")
+    if member_bonus_active and decision.get("status") == "booking_request":
+        if "priority member" not in booking_notes.lower():
+            booking_notes = (
+                f"{booking_notes} | Priority member booking request.".strip(" |")
+                if booking_notes
+                else "Priority member booking request."
+            )
+
     if decision["action"] == "create_outcome":
         db.upsert_booking(
             conversation_id=conversation_id,
@@ -455,7 +581,7 @@ def process_user_message(conversation_id: int, clinic: dict[str, Any], user_text
                 "duration_minutes": int(clinic["slot_length_minutes"]),
                 "status": decision.get("status", "booking_request"),
                 "outcome_reason": decision.get("reason", "incomplete_details"),
-                "notes": normalized_state.get("notes", ""),
+                "notes": booking_notes,
             },
         )
     elif existing_booking and existing_booking.get("status") == "booking_request":
@@ -486,13 +612,32 @@ def process_user_message(conversation_id: int, clinic: dict[str, Any], user_text
         notice = build_confirmation_notice(normalized_state)
         if notice.lower() not in assistant_text.lower():
             assistant_text = f"{assistant_text} {notice}".strip()
+        if member_bonus_active:
+            perk_msg = "Your member bonus has been applied with priority support for any changes."
+            if perk_msg.lower() not in assistant_text.lower():
+                assistant_text = f"{assistant_text} {perk_msg}".strip()
+    elif decision.get("status") == "booking_request" and member_bonus_active:
+        perk_msg = "As a signed-in member, your pending request has been marked priority."
+        if perk_msg.lower() not in assistant_text.lower():
+            assistant_text = f"{assistant_text} {perk_msg}".strip()
 
     db.add_message(conversation_id, "assistant", assistant_text)
 
 
-def render_chat_tab(clinic: dict[str, Any], conversation_id: int) -> None:
+def render_chat_tab(
+    clinic: dict[str, Any],
+    conversation_id: int,
+    auth_user: dict[str, Any],
+    member_bonus_active: bool,
+    guest_mode: bool,
+) -> None:
     """Render receptionist chat flow and live structured outcome state."""
     st.subheader("Reception Chat")
+
+    if guest_mode:
+        st.info("Guest booking is enabled. Sign in to unlock member bonus: autofill + priority follow-up.")
+    elif member_bonus_active:
+        st.success("Member bonus active: your profile details can be used to speed up booking.")
 
     left, right = st.columns([1, 1])
     with left:
@@ -540,7 +685,13 @@ def render_chat_tab(clinic: dict[str, Any], conversation_id: int) -> None:
 
     user_text = st.chat_input("Type a message to the receptionist...")
     if user_text:
-        process_user_message(conversation_id, clinic, user_text)
+        process_user_message(
+            conversation_id=conversation_id,
+            clinic=clinic,
+            user_text=user_text,
+            auth_user=auth_user,
+            member_bonus_active=member_bonus_active,
+        )
         st.rerun()
 
 
@@ -747,36 +898,39 @@ def main() -> None:
     apply_app_styles()
 
     clinic = bootstrap_clinic()
-    auth_user, admin_mode = render_auth_sidebar()
-
-    if auth_provider() == "clerk" and not auth_user:
-        st.title("Glow Aesthetics Clinic - AI Receptionist")
-        st.info("Please sign in from the sidebar to continue.")
-        st.stop()
+    auth_user, admin_mode, guest_mode = render_auth_sidebar()
 
     if not os.getenv("OPENAI_API_KEY"):
         st.warning(
             "OPENAI_API_KEY is missing. The app still works with deterministic fallback responses."
         )
 
+    member_bonus_active = auth_provider() == "clerk" and not guest_mode and bool(auth_user)
+
     render_header(clinic, auth_user, admin_mode)
     render_today_overview(clinic)
     conversation_id = ensure_session_conversation(clinic)
 
-    tab_names = ["Chat", "Calendar"]
+    # User role: chat-only; admin role: full operations views.
+    tab_names = ["Chat"]
     if admin_mode:
-        tab_names.extend(["Dashboard", "Leads", "Bookings", "Conversations"])
+        tab_names.extend(["Calendar", "Dashboard", "Leads", "Bookings", "Conversations"])
 
     tabs = st.tabs(tab_names)
     tab_map = {name: tab for name, tab in zip(tab_names, tabs)}
 
     with tab_map["Chat"]:
-        render_chat_tab(clinic, conversation_id)
-
-    with tab_map["Calendar"]:
-        render_calendar_tab(clinic)
+        render_chat_tab(
+            clinic=clinic,
+            conversation_id=conversation_id,
+            auth_user=auth_user,
+            member_bonus_active=member_bonus_active,
+            guest_mode=guest_mode,
+        )
 
     if admin_mode:
+        with tab_map["Calendar"]:
+            render_calendar_tab(clinic)
         with tab_map["Dashboard"]:
             render_dashboard_tab(clinic)
         with tab_map["Leads"]:

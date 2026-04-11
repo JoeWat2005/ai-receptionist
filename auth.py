@@ -5,10 +5,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any
+from typing import Any, Optional
 
 import jwt
 from jwt import PyJWKClient
+import streamlit as st
 
 
 @dataclass
@@ -35,6 +36,61 @@ class AuthUser:
 def auth_provider() -> str:
     """Return configured auth provider mode."""
     return os.getenv("AUTH_PROVIDER", "none").strip().lower()
+
+
+def clerk_oidc_is_configured() -> tuple[bool, str]:
+    """
+    Validate Streamlit OIDC secrets config for Clerk login flow.
+
+    Required environment-driven settings:
+      - CLERK_CLIENT_ID (or NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY)
+      - CLERK_CLIENT_SECRET (or CLERK_SECRET_KEY)
+      - CLERK_SERVER_METADATA_URL (or CLERK_FRONTEND_API_URL)
+      - STREAMLIT_COOKIE_SECRET
+    """
+    try:
+        auth_cfg = st.secrets.get("auth", {})
+    except Exception:
+        return (
+            False,
+            "Clerk auth is not configured. Set CLERK_CLIENT_ID, CLERK_CLIENT_SECRET, "
+            "CLERK_SERVER_METADATA_URL (or CLERK_FRONTEND_API_URL), and STREAMLIT_COOKIE_SECRET in `.env`.",
+        )
+
+    if not auth_cfg:
+        return (
+            False,
+            "Clerk auth is not configured. Add required Clerk OIDC keys to `.env` and restart the app.",
+        )
+
+    missing_shared: list[str] = []
+    for key in ["redirect_uri", "cookie_secret"]:
+        value = str(auth_cfg.get(key, "")).strip()
+        if not value:
+            missing_shared.append(key)
+
+    provider_cfg = auth_cfg.get("clerk", {})
+    if not provider_cfg:
+        return (
+            False,
+            "Clerk provider config missing. Check CLERK_CLIENT_ID, CLERK_CLIENT_SECRET, and CLERK_SERVER_METADATA_URL in `.env`.",
+        )
+
+    missing_provider: list[str] = []
+    for key in ["client_id", "client_secret", "server_metadata_url"]:
+        value = str(provider_cfg.get(key, "")).strip()
+        if not value:
+            missing_provider.append(key)
+
+    missing_parts: list[str] = []
+    if missing_shared:
+        missing_parts.append(f"[auth]: {', '.join(missing_shared)}")
+    if missing_provider:
+        missing_parts.append(f"[auth.clerk]: {', '.join(missing_provider)}")
+
+    if missing_parts:
+        return False, "Missing OIDC settings generated from `.env` -> " + " | ".join(missing_parts)
+    return True, ""
 
 
 def _get_nested(data: dict[str, Any], path: str) -> Any:
@@ -96,6 +152,49 @@ def _extract_name(claims: dict[str, Any]) -> str:
     if first or last:
         return f"{first} {last}".strip()
     return _extract_email(claims) or "Signed in user"
+
+
+def _read_streamlit_user_claims() -> dict[str, Any]:
+    """Safely return Streamlit user claims from OIDC login state."""
+    try:
+        raw = st.user.to_dict()
+    except Exception:
+        return {}
+
+    if not isinstance(raw, dict):
+        return {}
+    return raw
+
+
+def streamlit_user_is_logged_in() -> bool:
+    """Check current Streamlit OIDC login status."""
+    claims = _read_streamlit_user_claims()
+    if not claims:
+        return False
+
+    logged = claims.get("is_logged_in")
+    if isinstance(logged, bool):
+        return logged
+    return bool(claims.get("sub") or claims.get("email") or claims.get("user_id"))
+
+
+def get_authenticated_user_from_streamlit() -> Optional[AuthUser]:
+    """Map Streamlit OIDC user claims into normalized AuthUser."""
+    claims = _read_streamlit_user_claims()
+    if not claims or not streamlit_user_is_logged_in():
+        return None
+
+    user_id = _coalesce(claims.get("sub"), claims.get("user_id"), claims.get("uid")) or "unknown_user"
+    email = _extract_email(claims)
+    full_name = _extract_name(claims)
+    role = _extract_role(claims)
+    return AuthUser(
+        user_id=user_id,
+        email=email,
+        full_name=full_name,
+        role=role,
+        claims=claims,
+    )
 
 
 @lru_cache(maxsize=8)
@@ -179,4 +278,3 @@ def get_session_token_from_query(query_params: Any) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
-
