@@ -10,6 +10,12 @@ from typing import Any
 import streamlit as st
 from dotenv import load_dotenv
 
+from auth import (
+    auth_provider,
+    get_session_token_from_query,
+    is_admin_user,
+    verify_clerk_token,
+)
 import db
 from ai_logic import (
     detect_availability_query,
@@ -42,6 +48,213 @@ def load_env_settings() -> None:
 load_env_settings()
 
 WELCOME_TEMPLATE = "Hi, welcome to {clinic_name}. How can I help today?"
+
+
+def apply_app_styles() -> None:
+    """Apply a cleaner visual theme for demo-ready presentation."""
+    st.markdown(
+        """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500;700&display=swap');
+
+:root {
+  --bg: #f5f7fb;
+  --panel: #ffffff;
+  --ink: #1e2547;
+  --muted: #5c6384;
+  --brand: #2563eb;
+  --accent: #0ea5a4;
+  --line: #e4e8f3;
+}
+
+.stApp {
+  background:
+    radial-gradient(1100px 500px at -10% -20%, #dbeafe 0%, transparent 60%),
+    radial-gradient(900px 450px at 110% -25%, #ccfbf1 0%, transparent 55%),
+    var(--bg);
+}
+
+h1, h2, h3, h4 {
+  font-family: 'Space Grotesk', sans-serif !important;
+  color: var(--ink);
+}
+
+div, p, span, label, input, textarea, button {
+  font-family: 'DM Sans', sans-serif !important;
+}
+
+[data-testid="stSidebar"] {
+  background: linear-gradient(180deg, #f9fbff 0%, #f3f6ff 100%);
+  border-right: 1px solid var(--line);
+}
+
+[data-testid="stMetric"] {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 8px 12px;
+}
+
+[data-testid="stDataFrame"], .stTabs [data-baseweb="tab-panel"] {
+  background: var(--panel);
+  border-radius: 14px;
+}
+
+div.stButton > button {
+  border-radius: 12px;
+  border: 1px solid #d7ddf0;
+}
+
+.hero {
+  background: linear-gradient(120deg, #1e40af 0%, #0f766e 100%);
+  border-radius: 18px;
+  padding: 22px 24px;
+  color: #f8fbff;
+  margin-bottom: 10px;
+  box-shadow: 0 10px 24px rgba(31, 41, 55, 0.18);
+}
+
+.hero h1 {
+  color: #f8fbff !important;
+  margin: 0 0 4px 0;
+}
+
+.hero-sub {
+  color: #e6eefc;
+  margin: 0;
+}
+
+.pill-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.pill {
+  display: inline-block;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  color: #f8fbff;
+  font-size: 0.82rem;
+}
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_header(clinic: dict[str, Any], auth_user: dict[str, Any], admin_mode: bool) -> None:
+    """Render branded app header with quick clinic and user context."""
+    user_name = auth_user.get("full_name") or auth_user.get("email") or "Guest"
+    role_label = "Admin" if admin_mode else "User"
+    st.markdown(
+        f"""
+<div class="hero">
+  <h1>{clinic["name"]} - AI Receptionist</h1>
+  <p class="hero-sub">Conversational booking assistant with live availability and persistent records.</p>
+  <div class="pill-row">
+    <span class="pill">{clinic["location"]}</span>
+    <span class="pill">{clinic.get("opening_hours_text", "")}</span>
+    <span class="pill">Slot length: {clinic.get("slot_length_minutes", 30)} mins</span>
+    <span class="pill">Signed in: {user_name} ({role_label})</span>
+  </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def init_auth_state() -> None:
+    """Initialize auth-related session state keys."""
+    if "auth_user" not in st.session_state:
+        st.session_state.auth_user = None
+    if "auth_error" not in st.session_state:
+        st.session_state.auth_error = ""
+    if "auth_token" not in st.session_state:
+        st.session_state.auth_token = ""
+
+
+def render_auth_sidebar() -> tuple[dict[str, Any], bool]:
+    """
+    Render authentication controls.
+
+    Returns:
+      (auth_user_dict, is_admin)
+    """
+    init_auth_state()
+    provider = auth_provider()
+    st.sidebar.subheader("Authentication")
+
+    # Open mode for local demos when Clerk is not configured.
+    if provider != "clerk":
+        st.sidebar.caption("`AUTH_PROVIDER` is not `clerk`. Running in local demo access mode.")
+        local_user = {
+            "user_id": "local_demo",
+            "email": "demo@local",
+            "full_name": "Local Demo User",
+            "role": "admin",
+            "claims": {},
+        }
+        st.session_state.auth_user = local_user
+        return local_user, True
+
+    token_from_query = get_session_token_from_query(st.query_params)
+    if token_from_query and not st.session_state.auth_token:
+        st.session_state.auth_token = token_from_query
+
+    if st.session_state.auth_user:
+        auth_user = st.session_state.auth_user
+        st.sidebar.success("Authenticated")
+        st.sidebar.write(f"**User:** {auth_user.get('full_name') or auth_user.get('email')}")
+        st.sidebar.write(f"**Role:** {auth_user.get('role', 'user')}")
+        if st.sidebar.button("Sign out", use_container_width=True):
+            st.session_state.auth_user = None
+            st.session_state.auth_error = ""
+            st.session_state.auth_token = ""
+            st.rerun()
+        return auth_user, is_admin_user(auth_user)
+
+    token_input = st.sidebar.text_input(
+        "Clerk session token",
+        value=st.session_state.auth_token,
+        type="password",
+        help="Paste Clerk session JWT here, or pass `?__session=...` in URL.",
+    )
+    st.session_state.auth_token = token_input.strip()
+
+    if st.sidebar.button("Sign in", type="primary", use_container_width=True):
+        try:
+            user = verify_clerk_token(st.session_state.auth_token)
+            st.session_state.auth_user = user.to_session_dict()
+            st.session_state.auth_error = ""
+            st.rerun()
+        except Exception as exc:
+            st.session_state.auth_error = str(exc)
+
+    if st.session_state.auth_error:
+        st.sidebar.error(st.session_state.auth_error)
+    else:
+        st.sidebar.info("Sign in to access this app.")
+
+    return {}, False
+
+
+def render_today_overview(clinic: dict[str, Any]) -> None:
+    """Show quick operational metrics for today's bookings."""
+    today_iso = date.today().isoformat()
+    today_confirmed = db.get_confirmed_bookings_for_date(clinic["id"], today_iso)
+    today_available = list_available_slots(
+        date_iso=today_iso,
+        business_hours=clinic["business_hours"],
+        slot_length_minutes=int(clinic["slot_length_minutes"]),
+        confirmed_bookings=today_confirmed,
+    )
+    col_a, col_b, col_c = st.columns(3)
+    col_a.metric("Today confirmed", len(today_confirmed))
+    col_b.metric("Today free slots", len(today_available))
+    col_c.metric("Slot length", f"{int(clinic['slot_length_minutes'])} min")
 
 
 def _hhmm_to_time(hhmm: str) -> time:
@@ -530,38 +743,48 @@ def render_conversations_tab(active_conversation_id: int) -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="AI Receptionist Booking MVP", page_icon=":calendar:")
-    st.title("Glow Aesthetics Clinic - AI Receptionist Booking MVP")
+    st.set_page_config(page_title="AI Receptionist Booking MVP", page_icon=":calendar:", layout="wide")
+    apply_app_styles()
+
+    clinic = bootstrap_clinic()
+    auth_user, admin_mode = render_auth_sidebar()
+
+    if auth_provider() == "clerk" and not auth_user:
+        st.title("Glow Aesthetics Clinic - AI Receptionist")
+        st.info("Please sign in from the sidebar to continue.")
+        st.stop()
 
     if not os.getenv("OPENAI_API_KEY"):
         st.warning(
             "OPENAI_API_KEY is missing. The app still works with deterministic fallback responses."
         )
 
-    clinic = bootstrap_clinic()
+    render_header(clinic, auth_user, admin_mode)
+    render_today_overview(clinic)
     conversation_id = ensure_session_conversation(clinic)
 
-    chat_tab, calendar_tab, dashboard_tab, leads_tab, bookings_tab, conversations_tab = st.tabs(
-        ["Chat", "Calendar", "Dashboard", "Leads", "Bookings", "Conversations"]
-    )
+    tab_names = ["Chat", "Calendar"]
+    if admin_mode:
+        tab_names.extend(["Dashboard", "Leads", "Bookings", "Conversations"])
 
-    with chat_tab:
+    tabs = st.tabs(tab_names)
+    tab_map = {name: tab for name, tab in zip(tab_names, tabs)}
+
+    with tab_map["Chat"]:
         render_chat_tab(clinic, conversation_id)
 
-    with calendar_tab:
+    with tab_map["Calendar"]:
         render_calendar_tab(clinic)
 
-    with dashboard_tab:
-        render_dashboard_tab(clinic)
-
-    with leads_tab:
-        render_leads_tab()
-
-    with bookings_tab:
-        render_bookings_tab(clinic)
-
-    with conversations_tab:
-        render_conversations_tab(conversation_id)
+    if admin_mode:
+        with tab_map["Dashboard"]:
+            render_dashboard_tab(clinic)
+        with tab_map["Leads"]:
+            render_leads_tab()
+        with tab_map["Bookings"]:
+            render_bookings_tab(clinic)
+        with tab_map["Conversations"]:
+            render_conversations_tab(conversation_id)
 
 
 if __name__ == "__main__":
