@@ -1,0 +1,31 @@
+todo.txt
+
+TODO:
+
+Setup business onboarding flow
+Setup staff and customer accounts for businesses (replace admin)
+
+Changes:
+
+Better UI
+Setup scaffold for ai phone call processing
+Split frontend streamlit code into modular python files
+Make profile bit for account info like an icon you click on the nav / sidebar
+Fix weird sidebar text like keyboard_double_
+Get users actual names, dont default to email
+General fixes
+
+
+Business staff UI:
+1) Bookings
+2) Calendar
+3) Dashboard
+4) Leads
+5) Conversations
+6) Today confirmed widget and graph
+7) Today free slots widget
+8) Appointment slot length widget
+
+User UI:
+Chat page only, no today confirmed widget, free slots widget, and slot length widget, only account info widget (but remove this from both)
+
