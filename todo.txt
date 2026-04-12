@@ -4,6 +4,8 @@ TODO:
 
 Setup business onboarding flow
 Setup staff and customer accounts for businesses (replace admin)
+Setup scaffold code for calling
+create folders for services / frontend etc (refactor)
 
 Changes:
 

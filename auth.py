@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Optional
@@ -115,9 +116,32 @@ def _coalesce(*values: Any) -> str:
     return ""
 
 
+def _friendly_name_from_email(email: str) -> str:
+    """Create a readable fallback name from email local part."""
+    if "@" not in email:
+        return ""
+    local = email.split("@", 1)[0].strip().lower()
+    if not local:
+        return ""
+
+    chunks = [part for part in re.split(r"[._\-]+", local) if part]
+    cleaned: list[str] = []
+    for chunk in chunks[:3]:
+        token = re.sub(r"[^a-z0-9]", "", chunk)
+        if not token:
+            continue
+        cleaned.append(token.capitalize())
+    return " ".join(cleaned)
+
+
 def _extract_email(claims: dict[str, Any]) -> str:
     """Best-effort email extraction from Clerk token claims."""
-    direct = _coalesce(claims.get("email"), claims.get("email_address"), claims.get("primary_email_address"))
+    direct = _coalesce(
+        claims.get("email"),
+        claims.get("email_address"),
+        claims.get("primary_email_address"),
+        _get_nested(claims, "primary_email_address.email_address"),
+    )
     if direct:
         return direct
 
@@ -139,19 +163,34 @@ def _extract_role(claims: dict[str, Any]) -> str:
         _get_nested(claims, "metadata.role"),
         _get_nested(claims, "unsafe_metadata.role"),
     )
-    return role.lower() if role else "user"
+    return role.lower() if role else "customer"
 
 
 def _extract_name(claims: dict[str, Any]) -> str:
-    """Build display name from claims."""
-    full = _coalesce(claims.get("name"), claims.get("full_name"))
-    if full:
+    """Build display name from claims and avoid defaulting directly to raw email."""
+    full = _coalesce(
+        claims.get("name"),
+        claims.get("full_name"),
+        claims.get("preferred_username"),
+        claims.get("username"),
+        _get_nested(claims, "user.full_name"),
+        _get_nested(claims, "public_metadata.full_name"),
+    )
+    if full and "@" not in full:
         return full
-    first = _coalesce(claims.get("first_name"))
-    last = _coalesce(claims.get("last_name"))
-    if first or last:
-        return f"{first} {last}".strip()
-    return _extract_email(claims) or "Signed in user"
+
+    first = _coalesce(claims.get("given_name"), claims.get("first_name"), _get_nested(claims, "user.first_name"))
+    last = _coalesce(claims.get("family_name"), claims.get("last_name"), _get_nested(claims, "user.last_name"))
+    combined = f"{first} {last}".strip()
+    if combined:
+        return combined
+
+    email = _extract_email(claims)
+    fallback = _friendly_name_from_email(email)
+    if fallback:
+        return fallback
+
+    return "Signed-in user"
 
 
 def _read_streamlit_user_claims() -> dict[str, Any]:
@@ -253,17 +292,58 @@ def verify_clerk_token(token: str) -> AuthUser:
     )
 
 
-def is_admin_user(auth_user: dict[str, Any]) -> bool:
-    """Authorize admin users via role or explicit admin email list."""
+def _split_env_set(name: str) -> set[str]:
+    """Split comma-separated environment values into lowercase set."""
+    raw = os.getenv(name, "").strip()
+    return {item.strip().lower() for item in raw.split(",") if item.strip()}
+
+
+def is_staff_user(auth_user: dict[str, Any]) -> bool:
+    """Authorize staff users via role claims or explicit email allow list."""
     role = str(auth_user.get("role", "")).strip().lower()
-    expected_role = os.getenv("CLERK_ADMIN_ROLE_VALUE", "admin").strip().lower()
-    if role and role == expected_role:
+
+    role_values = _split_env_set("CLERK_STAFF_ROLE_VALUES")
+    if not role_values:
+        # Backward compatibility for older env naming.
+        fallback_role = os.getenv("CLERK_ADMIN_ROLE_VALUE", "admin").strip().lower()
+        role_values = {"staff", "owner", fallback_role}
+
+    if role and role in role_values:
         return True
 
-    admin_emails_raw = os.getenv("CLERK_ADMIN_EMAILS", "").strip()
-    admin_emails = {email.strip().lower() for email in admin_emails_raw.split(",") if email.strip()}
+    allowed_staff = _split_env_set("CLERK_STAFF_EMAILS")
+    # Backward compatibility: if older admin allowlist exists, include it.
+    allowed_staff.update(_split_env_set("CLERK_ADMIN_EMAILS"))
+
     email = str(auth_user.get("email", "")).strip().lower()
-    return bool(email and email in admin_emails)
+    return bool(email and email in allowed_staff)
+
+
+def is_customer_user(auth_user: dict[str, Any]) -> bool:
+    """Return True for signed-in, non-staff accounts."""
+    if not auth_user:
+        return False
+    if str(auth_user.get("role", "")).strip().lower() == "guest":
+        return False
+    if not str(auth_user.get("user_id", "")).strip():
+        return False
+    return not is_staff_user(auth_user)
+
+
+def resolve_business_role(auth_user: dict[str, Any]) -> str:
+    """Resolve app-level access role: guest, customer, or staff."""
+    if not auth_user:
+        return "guest"
+    if str(auth_user.get("role", "")).strip().lower() == "guest":
+        return "guest"
+    if is_staff_user(auth_user):
+        return "staff"
+    return "customer"
+
+
+def is_admin_user(auth_user: dict[str, Any]) -> bool:
+    """Backward-compatible alias: admin access maps to staff access."""
+    return is_staff_user(auth_user)
 
 
 def get_session_token_from_query(query_params: Any) -> str:

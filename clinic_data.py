@@ -1,4 +1,4 @@
-﻿"""Static clinic configuration and helpers."""
+"""Static clinic configuration and helpers."""
 
 from __future__ import annotations
 
@@ -21,6 +21,12 @@ DEFAULT_CLINIC = {
     "timezone": "Europe/London",
     "opening_hours_text": "Mon-Fri 9am-6pm, Sat 10am-4pm",
     "slot_length_minutes": 30,
+    "business_contact_name": "",
+    "business_contact_email": "",
+    "business_contact_phone": "",
+    "business_website": "",
+    "onboarding_completed": False,
+    "onboarding_notes": "",
     "business_hours": {
         "mon": {"open": "09:00", "close": "18:00"},
         "tue": {"open": "09:00", "close": "18:00"},
