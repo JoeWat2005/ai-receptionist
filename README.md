@@ -1,8 +1,11 @@
+> [!WARNING]
+> **Deprecated: no longer maintained.** Last updated in April 2026; kept for reference.
+
 # AI receptionist prototype
 
 Streamlit prototype of an AI receptionist for an aesthetics clinic: a chat assistant that collects booking details, checks availability and records bookings and leads in SQLite.
 
-Status: early prototype, no longer maintained. Superseded by [DeskCaptain](https://github.com/JoeWat2005/deskcaptain).
+Status: deprecated early prototype, superseded by [DeskCaptain](https://github.com/JoeWat2005/deskcaptain).
 
 ## Features
 
